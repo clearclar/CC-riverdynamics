@@ -7,7 +7,7 @@ Due to the long temporal coverage, the resulting data would enable a detailed an
 
 Maps of AWEI no-shadow for selected areas within the catchment over four different years.
 <p align="center">
-  <img src="awei_nsh_ext.png" width="350" title="hover text">
-  <img src="awei_nsh_dur.png" width="350" alt="accessibility text">
+  <img src="awei_nsh_ext.png" width="350">
+  <img src="awei_nsh_dur.png" width="350">
 </p>
 
