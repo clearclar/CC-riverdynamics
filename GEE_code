@@ -1,0 +1,240 @@
+// APPLICATION OF MNDWI, AWEI (SHADOW) AND AWEI (NO-SHADOW) TO NARYN RIVER BASINM KYRGYZSTAN
+
+// Define start and end date of time period of interest.
+var startDate = ee.Date('1988-01-01')
+var endDate = ee.Date('2023-12-31')
+// Create list of years for later grouping.
+var yearList = ee.List.sequence(startDate.get('year'), endDate.get('year'))
+
+// Define new band names for Sentinel and Landsat scenes
+// in order to make functions universally applicable
+var bandNames = ['Blue', 'Green', 'Red', 'NIR', 'SWIR1', 'SWIR2']
+
+// FUNCTIONS
+// Add day of year as band.
+function addDOY(image) {
+  var doy = ee.Image.constant(image.date().getRelative('day', 'year')).int().rename('DOY')
+  return image.addBands(doy);
+}
+
+// Mask pixels over the elevation of 2000 m, considering the
+// Copernicus DEM GLO-30: Global 30m Digital Elevation Model.
+var elevation = ee.ImageCollection("COPERNICUS/DEM/GLO30")
+  .select('DEM')
+  .filterBounds(roi)
+  .median()
+function cropElev(image){
+  return image.updateMask(elevation.lte(2000))
+}
+
+// Masking cloud and snow ...
+// ... for Landsat
+function cloudmaskLandsat(image) {
+  var qa = image.select('QA_PIXEL');
+  var cloud = 1 << 3;
+  var shadow = 1 << 4;
+  var snow = 1 << 5;
+
+  var mask = qa.bitwiseAnd(cloud).eq(0)
+    .and(qa.bitwiseAnd(shadow).eq(0))
+    .and(qa.bitwiseAnd(snow).eq(0));
+
+
+  return image.updateMask(mask);
+}
+
+// ... for Sentinel
+var cloudmaskSentinel = function(image){
+  var scl = image.select('SCL');
+  var cloud_shadow = scl.eq(3);
+  var cloud_low = scl.eq(7);
+  var cloud_medium = scl.eq(8);
+  var cloud_high = scl.eq(9);
+  var snow = scl.eq(11);
+  var cloud_mask = cloud_shadow.add(cloud_low).add(cloud_medium).add(cloud_high).add(snow);
+  var cloud_uni = cloud_mask.eq(0).selfMask();
+  return image.updateMask(cloud_uni).copyProperties(image);
+}
+
+// Detecting water areas by different indices.
+// Select 1 for awei_nsh, 2 for awei_sh and 3 for mndwi
+var detectWater = function(image, scale){
+  
+  image = ee.Image(image)
+  
+  // AWEInsh is an index formulated to effectively eliminate nonwater pixels, 
+  // including dark built surfaces in areas with urban background
+  var awei_nsh = image.expression(
+    '4 * (Green - SWIR1) - (0.25 * NIR + 2.75 * SWIR2)', {
+      'Green': image.select('Green'),
+      'NIR': image.select('NIR'),
+      'SWIR1': image.select('SWIR1'),
+      'SWIR2': image.select('SWIR2'),
+  }).rename('water_idx');
+  
+  // AWEIsh is primarily formulated for further improvement of accuracy by 
+  // removing shadow pixels that AWEInsh may not effectively eliminate.
+  var awei_sh = image.expression(
+  'Blue + (2.5 * Green) - (1.5 * (NIR + SWIR1)) - (0.25 * SWIR2)', {
+    'Blue': image.select('Blue'),
+    'Green': image.select('Green'),
+    'NIR': image.select('NIR'),
+    'SWIR1': image.select('SWIR1'),
+    'SWIR2': image.select('SWIR2'),
+  }).rename('water_idx');
+  
+  var mndwi = image.normalizedDifference(['Green', 'SWIR1']).rename('water_idx')
+  
+  // Therefore, both equations of AWEI (AWEInsh and AWEIsh) were applied sequentially:
+  // first, AWEInsh was applied to the image; next, AWEIsh was used to eliminate
+  // misclassified pixels with shadows and other dark surfaces. At the test sites in
+  // Switzerland, New Zealand and South Africa, only AWEIsh was applied because urban 
+  // surfaces are rare in these sites.
+  
+  // Otsu Thresholding
+  var genaThresholding = require(
+    'users/gena/packages:thresholding');
+  var bounds = roi;
+  var cannyThreshold = 0.7;
+  var cannySigma = 1;
+  var minValue = -0.2;
+  var th = genaThresholding.computeThresholdUsingOtsu(
+    // change here depending on the required index
+    awei_nsh,
+    scale, bounds, 
+    cannyThreshold, cannySigma, minValue);
+  
+  var aweiWater = awei_nsh.gt(th).rename('water');
+
+  return aweiWater.copyProperties(image, ["system:time_start"]).copyProperties(image);
+
+};
+
+// Function for export.
+var exportImage = function(image, name, region) {
+  Export.image.toDrive({
+    image: image,
+    description: name,
+    folder: 'MaxFloodExtent', 
+    region: roi,
+    scale: 30, 
+    maxPixels: 1e13,
+  });
+};
+
+
+// APPLICATION
+// Landsat.
+var L9 = ee.ImageCollection("LANDSAT/LC09/C02/T1_L2").map(cloudmaskLandsat).select(ee.List.sequence(1,6), bandNames)
+var L8 = ee.ImageCollection("LANDSAT/LC08/C02/T1_L2").map(cloudmaskLandsat).select(ee.List.sequence(1,6), bandNames)
+var L7 = ee.ImageCollection("LANDSAT/LE07/C02/T1_L2").map(cloudmaskLandsat).select([0,1,2,3,4,6], bandNames)
+var L5 = ee.ImageCollection("LANDSAT/LT05/C02/T1_L2").map(cloudmaskLandsat).select([0,1,2,3,4,6], bandNames)
+var L4 = ee.ImageCollection("LANDSAT/LT04/C02/T1_L2").map(cloudmaskLandsat).select([0,1,2,3,4,6], bandNames)
+
+var Lcol = L9.merge(L8).merge(L7).merge(L5).merge(L4)
+  // Filter by date, ...
+  .filter(ee.Filter.date(startDate, endDate))
+  // ... cloud cover and
+  .filter(ee.Filter.lt('CLOUD_COVER', 50))
+  // ... region of interest.
+  .filterBounds(roi)
+  // Crop elevation.
+  .map(cropElev)
+  // Crop by region of interest.
+  .map(function(image){
+    return image.clip(roi)
+  })
+  // Apply the water detection algorithm.
+  .map(function(image){
+    return detectWater(image, 50, 1)
+  })
+  // Add day of year as band.
+  .map(addDOY)
+
+// Repeat for Sentinel-2 imagery.
+var S2 = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+  .map(cloudmaskSentinel)
+  .select([2, 3, 4, 8, 11, 12], bandNames)
+  .filter(ee.Filter.date(startDate, endDate))
+  .filterBounds(roi)
+  .filter(ee.Filter.lte('CLOUDY_PIXEL_PERCENTAGE', 50))
+  .map(cropElev)
+  .map(function(image){
+  return image.clip(roi)
+})
+  .map(function(image){
+  return detectWater(image, 50, 1)
+})
+  .map(addDOY)
+
+// Merge Landsat and Sentinel water cover images.
+var ImgCol = Lcol.merge(S2)
+
+// Group images by year.
+var Lyears = yearList.map(function(year){
+  var yearStart = ee.Date.fromYMD(year, 4, 1);
+  var yearEnd = ee.Date.fromYMD(year, 10, 31);
+  return ImgCol.filter(ee.Filter.date(yearStart, yearEnd));
+})
+
+// Calculate maximum water extent ...
+var LyearsExt = ee.ImageCollection(Lyears.map(function(col){
+  col = ee.ImageCollection(col)
+  var year = ee.Date(col.first().get('system:time_start')).get('year')
+  // ... by selecting every pixel within a year that has been covered with water at least once.
+  var waterExtent = ee.ImageCollection(col).select('rastWater').max()
+  return waterExtent.float().set('year', year)
+}))
+
+// Claculate water duration per year ...
+var LyearsDur = ee.ImageCollection(Lyears.map(function(col){
+  col = ee.ImageCollection(col)
+  var year = ee.Date(col.first().get('system:time_start')).get('year')
+  
+  // ... by selecting the first and last day of year which a pixel has been classified as water-covered, ...
+  var start = col.select(['rastWater', 'DOY']).map(function(image){
+    return image.updateMask(image.select('rastWater').eq(1))
+  }).reduce(ee.Reducer.min(2)).rename('minWater', 'minDOY')
+  
+  var end = col.select(['DOY', 'rastWater']).map(function(image){
+    return image.updateMask(image.select('rastWater').eq(1))
+  }).reduce(ee.Reducer.max(2)).rename('maxDOY', 'maxWater')
+  
+  // ... adding the bands into one image ...
+  var resImg = ee.Image(start).addBands(end)
+  
+  // ... and calculating the number of days in between the images.
+  var Duration = resImg.expression(
+    'End - Start', {
+      'End': resImg.select('maxDOY'),
+      'Start': resImg.select('minDOY'),
+    }).rename('Dur');
+    
+  var propDuration = Duration.float().set('year', year)
+  
+  return propDuration
+}))
+
+// Adding the images for maximum extent and duration for each year into one for easier export.
+var mergedCollection = LyearsExt.map(function(image, collection2) {
+  // Get the index of the image in collection1
+  var index = image.get('system:index');
+
+  // Find the corresponding image in collection2 using the same index
+  var correspondingImage = LyearsDur.filter(ee.Filter.eq('system:index', index)).first();
+  
+  // Add the bands from the corresponding image as new bands
+  var mergedImage = image.addBands(correspondingImage);
+  
+  return mergedImage;
+});
+
+
+// Export each layer dynamically.
+// Change the name depending on the used index.
+print('After defining the index in "detect water",\nchange the export name depending on the used index.');
+yearList.getInfo().forEach(function(year) {
+  var img_year = ee.Image(mergedCollection.filter(ee.Filter.eq('year', year)).first());
+  var name = 'Landsat_Sentinel2_' + year + '_awei_nsh';
+  exportImage(img_year, name, roi);
+});
