@@ -6,5 +6,8 @@ Taking advantage of the long time series of the Landsat data archive and its hig
 Due to the long temporal coverage, the resulting data would enable a detailed analysis of flood events over several decades. The processing was completed in the Google Earth Engine (GEE) for the entire Naryn watershed from April to October using Landsat data from 1988 to 2023. Delineating water bodies and tracking changes in flood extent and duration can contribute to water management, disaster control and climate analysis.
 
 Maps of AWEI no-shadow for selected areas within the catchment over four different years.
-![alt text](awei_nsh_dur.png)
-![alt text](awei_nsh_ext.png)
+<p align="center">
+  <img src="awei_nsh_ext.png" width="350" title="hover text">
+  <img src="awei_nsh_dur.png" width="350" alt="accessibility text">
+</p>
+
