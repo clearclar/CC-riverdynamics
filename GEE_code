@@ -1,5 +1,56 @@
 // APPLICATION OF MNDWI, AWEI (SHADOW) AND AWEI (NO-SHADOW) TO NARYN RIVER BASINM KYRGYZSTAN
 
+// This script enables you to extract water cover maximum extent and water cover duration
+// for the Naryn river basin in Kyrgyzstan and download the raster data.
+// Calculations are made for April to October of every year between 1988 and 2023.
+// Riparian zone outline for spatial filtering are courtesy to M. Lauermann (2022), unpublished.
+// The applied indices for water cover detecion are the automated water extraction index (AWEI)
+// for no-shadow areas, the AWEI for shadow areas and the modified normalized difference water index (MNDWI).
+// Information on the indices can be found in
+
+// Laonamsai, J.; Julphunthong, P.; Saprathet, T.; Kimmany, B.; Ganchanasuragit, T.; Chomcheawchan, P.; 
+// Tomun, N. Utilizing NDWI, MNDWI, SAVI, WRI, and AWEI for Estimating Erosion and Deposition in Ping River 
+// in Thailand. Hydrology 2023, 10, 70, doi:10.3390/hydrology10030070.
+
+// and
+
+// Feyisa, G.L.; Meilby, H.; Fensholt, R.; Proud, S.R. Automated Water Extraction Index: A New Technique 
+// for Surface Water Mapping Using Landsat Imagery. Remote Sensing of Environment 2014, 140, 23–35, 
+// doi:10.1016/j.rse.2013.08.029.
+
+// Unfortunately, datasets are too large to be displayed in GEE. Download via Google Drive to visualize.
+
+// Desired index: write 0 for awei_nsh, 1 for awei_sh and 2 for mndwi
+// Replace the index_name with the used index.
+var index_number = 1
+// And name the index correctly.
+var index_name = 'awei_nsh'
+
+Map.centerObject(Naryn, 7)
+
+// Create an empty image into which to paint the features, cast to byte.
+var empty = ee.Image().byte();
+
+// Paint the outline of the Naryn catchment.
+var Naryn_outline = empty.paint({
+  featureCollection: Naryn,
+  color: 1,
+  width: 2
+});
+
+// Add a border and zoom on it.
+Map.addLayer(Naryn_outline, {palette: 'darkblue'},'Naryn water catchment');
+
+// Paint the outline of the riparian zones.
+var roi_outline = empty.paint({
+  featureCollection: roi,
+  color: 1,
+  width: 2
+});
+
+// Add a border and zoom on it.
+Map.addLayer(roi_outline, {palette: 'darkred'},'Riparian zones');
+
 // Define start and end date of time period of interest.
 var startDate = ee.Date('1988-01-01')
 var endDate = ee.Date('2023-12-31')
@@ -85,6 +136,10 @@ var detectWater = function(image, scale){
   
   var mndwi = image.normalizedDifference(['Green', 'SWIR1']).rename('water_idx')
   
+  var indexcollection = ee.List([awei_nsh, awei_sh, mndwi])
+  var sel_index = ee.Image(indexcollection.get(index_number))
+  
+  
   // Therefore, both equations of AWEI (AWEInsh and AWEIsh) were applied sequentially:
   // first, AWEInsh was applied to the image; next, AWEIsh was used to eliminate
   // misclassified pixels with shadows and other dark surfaces. At the test sites in
@@ -100,11 +155,11 @@ var detectWater = function(image, scale){
   var minValue = -0.2;
   var th = genaThresholding.computeThresholdUsingOtsu(
     // change here depending on the required index
-    awei_nsh,
+    sel_index,
     scale, bounds, 
     cannyThreshold, cannySigma, minValue);
   
-  var aweiWater = awei_nsh.gt(th).rename('water');
+  var aweiWater = sel_index.gt(th).rename('water');
 
   return aweiWater.copyProperties(image, ["system:time_start"]).copyProperties(image);
 
@@ -182,7 +237,7 @@ var LyearsExt = ee.ImageCollection(Lyears.map(function(col){
   col = ee.ImageCollection(col)
   var year = ee.Date(col.first().get('system:time_start')).get('year')
   // ... by selecting every pixel within a year that has been covered with water at least once.
-  var waterExtent = ee.ImageCollection(col).select('rastWater').max()
+  var waterExtent = ee.ImageCollection(col).select('water').max()
   return waterExtent.float().set('year', year)
 }))
 
@@ -192,12 +247,12 @@ var LyearsDur = ee.ImageCollection(Lyears.map(function(col){
   var year = ee.Date(col.first().get('system:time_start')).get('year')
   
   // ... by selecting the first and last day of year which a pixel has been classified as water-covered, ...
-  var start = col.select(['rastWater', 'DOY']).map(function(image){
-    return image.updateMask(image.select('rastWater').eq(1))
+  var start = col.select(['water', 'DOY']).map(function(image){
+    return image.updateMask(image.select('water').eq(1))
   }).reduce(ee.Reducer.min(2)).rename('minWater', 'minDOY')
   
-  var end = col.select(['DOY', 'rastWater']).map(function(image){
-    return image.updateMask(image.select('rastWater').eq(1))
+  var end = col.select(['DOY', 'water']).map(function(image){
+    return image.updateMask(image.select('water').eq(1))
   }).reduce(ee.Reducer.max(2)).rename('maxDOY', 'maxWater')
   
   // ... adding the bands into one image ...
@@ -229,12 +284,19 @@ var mergedCollection = LyearsExt.map(function(image, collection2) {
   return mergedImage;
 });
 
-
 // Export each layer dynamically.
 // Change the name depending on the used index.
-print('After defining the index in "detect water",\nchange the export name depending on the used index.');
 yearList.getInfo().forEach(function(year) {
   var img_year = ee.Image(mergedCollection.filter(ee.Filter.eq('year', year)).first());
-  var name = 'Landsat_Sentinel2_' + year + '_awei_nsh';
+  var name = 'Landsat_Sentinel2_' + year + '_' + index_name;
   exportImage(img_year, name, roi);
 });
+
+// Create a title.
+var title = ui.Label('Naryn river basin, Kyrgyzstan', {
+  stretch: 'horizontal',
+  textAlign: 'leftcenter',
+  fontWeight: 'bold',
+  fontSize: '16px'
+});
+Map.add(title)
